@@ -1,68 +1,72 @@
-"""Configuration loading and validation for hookpipe."""
+"""Load and validate hookpipe configuration."""
 
-import os
-from typing import Any, Dict, List, Optional
+from __future__ import annotations
 
-try:
-    import yaml
-except ImportError:  # pragma: no cover
-    yaml = None  # type: ignore
+import json
+from pathlib import Path
+from typing import Any
 
 
 class ConfigError(Exception):
-    """Raised when configuration is invalid or missing required fields."""
+    """Raised when configuration is invalid."""
 
 
-_REQUIRED_TARGET_KEYS = {"url"}
-_VALID_METHODS = {"GET", "POST", "PUT", "PATCH", "DELETE"}
+def _validate_target(target: Any, index: int) -> None:
+    if not isinstance(target, dict):
+        raise ConfigError(f"targets[{index}] must be a dict")
+    if "url" not in target:
+        raise ConfigError(f"targets[{index}] missing required field 'url'")
+    if not isinstance(target["url"], str) or not target["url"].startswith("http"):
+        raise ConfigError(f"targets[{index}]['url'] must be an HTTP/HTTPS URL")
 
 
-def _validate_target(target: Dict[str, Any], index: int) -> None:
-    missing = _REQUIRED_TARGET_KEYS - target.keys()
-    if missing:
-        raise ConfigError(f"Target[{index}] missing required keys: {missing}")
-    method = target.get("method", "POST").upper()
-    if method not in _VALID_METHODS:
-        raise ConfigError(f"Target[{index}] unsupported method: {method!r}")
+def _validate_route(route: Any, index: int) -> None:
+    if not isinstance(route, dict):
+        raise ConfigError(f"routes[{index}] must be a dict")
+    if "targets" not in route:
+        raise ConfigError(f"routes[{index}] missing required field 'targets'")
+    if not isinstance(route["targets"], list):
+        raise ConfigError(f"routes[{index}]['targets'] must be a list")
+    for t_idx, target in enumerate(route["targets"]):
+        _validate_target(target, t_idx)
+    filters = route.get("filters", [])
+    if not isinstance(filters, list):
+        raise ConfigError(f"routes[{index}]['filters'] must be a list")
 
 
-def _validate_config(config: Dict[str, Any]) -> None:
-    if "targets" not in config:
-        raise ConfigError("Config must define at least one 'targets' entry")
-    targets = config["targets"]
-    if not isinstance(targets, list) or len(targets) == 0:
-        raise ConfigError("'targets' must be a non-empty list")
-    for i, target in enumerate(targets):
-        _validate_target(target, i)
+def _validate_config(config: Any) -> None:
+    if not isinstance(config, dict):
+        raise ConfigError("config must be a JSON object")
+    if "routes" not in config:
+        raise ConfigError("config missing required field 'routes'")
+    if not isinstance(config["routes"], list):
+        raise ConfigError("'routes' must be a list")
+    for idx, route in enumerate(config["routes"]):
+        _validate_route(route, idx)
 
 
-def load_config(path: Optional[str] = None) -> Dict[str, Any]:
-    """Load and validate a YAML config file.
+def load_config(path: str | Path) -> dict[str, Any]:
+    """Load and validate a JSON config file.
 
-    Falls back to the HOOKPIPE_CONFIG environment variable when *path* is None.
+    Args:
+        path: Path to the JSON configuration file.
+
+    Returns:
+        Validated configuration dict.
 
     Raises:
-        ConfigError: If the file cannot be read, parsed, or fails validation.
+        ConfigError: If the file cannot be read, parsed, or is structurally
+                     invalid.
     """
-    if yaml is None:
-        raise ConfigError("PyYAML is required to load configuration files")
-
-    resolved = path or os.environ.get("HOOKPIPE_CONFIG")
-    if not resolved:
-        raise ConfigError(
-            "No config path provided and HOOKPIPE_CONFIG env var is not set"
-        )
+    try:
+        raw = Path(path).read_text(encoding="utf-8")
+    except OSError as exc:
+        raise ConfigError(f"Cannot read config file: {exc}") from exc
 
     try:
-        with open(resolved, "r", encoding="utf-8") as fh:
-            raw = yaml.safe_load(fh)
-    except FileNotFoundError as exc:
-        raise ConfigError(f"Config file not found: {resolved}") from exc
-    except yaml.YAMLError as exc:
-        raise ConfigError(f"YAML parse error in {resolved}: {exc}") from exc
+        config = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise ConfigError(f"Config is not valid JSON: {exc}") from exc
 
-    if not isinstance(raw, dict):
-        raise ConfigError("Config file must contain a YAML mapping at the top level")
-
-    _validate_config(raw)
-    return raw
+    _validate_config(config)
+    return config
