@@ -29,6 +29,8 @@ _start_time: float = time.monotonic()
 
 def increment(counter: str, amount: int = 1) -> None:
     """Increment a named counter by the given amount."""
+    if amount < 0:
+        raise MetricsError(f"Increment amount must be non-negative, got {amount}")
     with _lock:
         if counter not in _counters:
             raise MetricsError(f"Unknown counter: {counter!r}")
@@ -37,6 +39,8 @@ def increment(counter: str, amount: int = 1) -> None:
 
 def record_timing(metric: str, duration: float) -> None:
     """Append a timing sample (in seconds) to a named timing metric."""
+    if duration < 0:
+        raise MetricsError(f"Timing duration must be non-negative, got {duration}")
     with _lock:
         if metric not in _timings:
             raise MetricsError(f"Unknown timing metric: {metric!r}")
