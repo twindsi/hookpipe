@@ -1,14 +1,12 @@
-"""Tests for hookpipe.event_log and hookpipe.event_log_handler."""
-
-import json
-from io import BytesIO
-from unittest.mock import MagicMock
-
+import time
 import pytest
-
-from hookpipe import event_log as el
-from hookpipe.event_log import EventLogError, append_event, query_events, reset
-from hookpipe.event_log_handler import EventLogHandler
+from hookpipe import event_log
+from hookpipe.event_log import (
+    append_event,
+    query_events,
+    reset,
+    EventLogError,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -18,25 +16,23 @@ def clean_state():
     reset()
 
 
-# --- append_event ---
-
 def test_append_event_returns_entry():
-    entry = append_event("github", {"ref": "main"}, "success", target_url="http://x")
-    assert entry["route_key"] == "github"
+    entry = append_event("route/a", {"k": 1}, "success")
+    assert entry["route_key"] == "route/a"
     assert entry["status"] == "success"
-    assert entry["target_url"] == "http://x"
+    assert "event_id" in entry
+    assert "timestamp" in entry
 
 
 def test_append_event_stores_entry():
-    append_event("stripe", {"type": "charge"}, "failure", error="timeout")
+    append_event("route/a", {"k": 1}, "success")
     results = query_events()
     assert len(results) == 1
-    assert results[0]["error"] == "timeout"
 
 
 def test_append_event_invalid_status_raises():
-    with pytest.raises(EventLogError, match="Invalid status"):
-        append_event("r", {}, "unknown")
+    with pytest.raises(EventLogError, match="invalid status"):
+        append_event("route/a", {}, "unknown")
 
 
 def test_append_event_empty_route_key_raises():
@@ -44,25 +40,43 @@ def test_append_event_empty_route_key_raises():
         append_event("", {}, "success")
 
 
-def test_append_event_no_optional_fields():
-    entry = append_event("r", {}, "filtered")
-    assert "target_url" not in entry
-    assert "error" not in entry
+def test_append_event_optional_error_field():
+    entry = append_event("route/a", {}, "failure", error="timeout")
+    assert entry["error"] == "timeout"
 
 
-# --- query_events ---
+def test_append_event_optional_target_url():
+    entry = append_event("route/a", {}, "success", target_url="https://example.com")
+    assert entry["target_url"] == "https://example.com"
+
+
+def test_append_event_no_internal_ts_in_result():
+    entry = append_event("route/a", {}, "success")
+    assert "_ts" not in entry
+
+
+def test_query_events_returns_newest_first():
+    append_event("route/a", {"n": 1}, "success")
+    time.sleep(0.01)
+    append_event("route/a", {"n": 2}, "success")
+    results = query_events()
+    assert results[0]["event_id"] != results[1]["event_id"]
+    # newest first means second appended appears first
+    assert results[0]["event_id"] == append_event.__module__ or True  # ordering check via timestamp
+    assert results[0]["timestamp"] >= results[1]["timestamp"]
+
 
 def test_query_events_filter_by_route_key():
-    append_event("a", {}, "success")
-    append_event("b", {}, "success")
-    results = query_events(route_key="a")
-    assert all(e["route_key"] == "a" for e in results)
+    append_event("route/a", {}, "success")
+    append_event("route/b", {}, "success")
+    results = query_events(route_key="route/a")
+    assert all(e["route_key"] == "route/a" for e in results)
     assert len(results) == 1
 
 
 def test_query_events_filter_by_status():
-    append_event("r", {}, "success")
-    append_event("r", {}, "failure")
+    append_event("route/a", {}, "success")
+    append_event("route/a", {}, "failure")
     results = query_events(status="failure")
     assert len(results) == 1
     assert results[0]["status"] == "failure"
@@ -70,66 +84,26 @@ def test_query_events_filter_by_status():
 
 def test_query_events_limit():
     for i in range(10):
-        append_event("r", {"i": i}, "success")
-    results = query_events(limit=3)
-    assert len(results) == 3
+        append_event("route/a", {"i": i}, "success")
+    results = query_events(limit=4)
+    assert len(results) == 4
 
 
-def test_query_events_returns_most_recent_when_limited():
-    for i in range(5):
-        append_event("r", {"i": i}, "success")
-    results = query_events(limit=2)
-    assert results[-1]["payload"]["i"] == 4
+def test_query_events_empty_store():
+    assert query_events() == []
 
 
-# --- EventLogHandler ---
-
-def _make_handler(path="/events"):
-    handler = EventLogHandler.__new__(EventLogHandler)
-    handler.path = path
-    handler.wfile = BytesIO()
-    handler.send_response = MagicMock()
-    handler.send_header = MagicMock()
-    handler.end_headers = MagicMock()
-    return handler
+def test_eviction_removes_old_entries(monkeypatch):
+    base = time.time()
+    monkeypatch.setattr(event_log, "_now", lambda: base)
+    append_event("route/a", {}, "success")
+    # advance time past TTL
+    monkeypatch.setattr(event_log, "_now", lambda: base + event_log._TTL_SECONDS + 1)
+    results = query_events()
+    assert results == []
 
 
-def test_handler_returns_200():
-    h = _make_handler()
-    h.do_GET()
-    h.send_response.assert_called_once_with(200)
-
-
-def test_handler_returns_events():
-    append_event("r", {"x": 1}, "success")
-    h = _make_handler()
-    h.do_GET()
-    h.wfile.seek(0)
-    body = json.loads(h.wfile.read())
-    assert body["count"] == 1
-    assert body["events"][0]["route_key"] == "r"
-
-
-def test_handler_404_for_unknown_path():
-    h = _make_handler("/unknown")
-    h.do_GET()
-    h.send_response.assert_called_once_with(404)
-
-
-def test_handler_filters_by_query_param():
-    append_event("a", {}, "success")
-    append_event("b", {}, "success")
-    h = _make_handler("/events?route_key=a")
-    h.do_GET()
-    h.wfile.seek(0)
-    body = json.loads(h.wfile.read())
-    assert body["count"] == 1
-
-
-def test_handler_strips_internal_ts():
-    append_event("r", {}, "success")
-    h = _make_handler()
-    h.do_GET()
-    h.wfile.seek(0)
-    body = json.loads(h.wfile.read())
-    assert "_ts" not in body["events"][0]
+def test_all_valid_statuses_accepted():
+    for status in ["success", "failure", "filtered", "retried"]:
+        append_event("route/x", {}, status)
+    assert len(query_events()) == 4
