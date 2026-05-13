@@ -51,7 +51,7 @@ def apply_filters(payload: dict, rules: list[dict]) -> bool:
             if actual == expected:
                 return False
         elif op == "contains":
-            if not isinstance(actual, str) or expected not in actual:
+            if not isinstance(actual, (str, list)) or expected not in actual:
                 return False
         elif op == "exists":
             if actual is None:
