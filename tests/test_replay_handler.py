@@ -9,6 +9,7 @@ from hookpipe.replay_handler import ReplayHandler
 
 
 def _make_handler(path: str) -> ReplayHandler:
+    """Create a minimal ReplayHandler instance with mocked HTTP primitives."""
     handler = ReplayHandler.__new__(ReplayHandler)
     handler.path = path
     handler.wfile = io.BytesIO()
@@ -20,12 +21,14 @@ def _make_handler(path: str) -> ReplayHandler:
 
 @pytest.fixture(autouse=True)
 def setup_function():
+    """Reset replay state before and after each test to ensure isolation."""
     replay.reset()
     yield
     replay.reset()
 
 
 def _read_body(handler: ReplayHandler) -> dict:
+    """Seek to the beginning of the response buffer and deserialise JSON."""
     handler.wfile.seek(0)
     return json.loads(handler.wfile.read())
 
@@ -83,3 +86,12 @@ def test_replay_endpoint_content_type_header():
     h.do_GET()
     calls = [str(c) for c in h.send_header.call_args_list]
     assert any("application/json" in c for c in calls)
+
+
+def test_replay_endpoint_empty_store_returns_zero_count():
+    """Listing events on an empty store should return count 0 and an empty list."""
+    h = _make_handler("/replay")
+    h.do_GET()
+    body = _read_body(h)
+    assert body["count"] == 0
+    assert body["events"] == []
