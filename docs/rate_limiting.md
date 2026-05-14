@@ -53,6 +53,26 @@ Useful for metrics and debugging.
 Clears rate-limit state.  Omit `route_key` (or pass `None`) to reset
 all routes — handy in tests.
 
+### `RateLimitError`
+
+Raised by `check_rate_limit` when a route exceeds its allowed request count.
+The exception exposes two attributes:
+
+| Attribute      | Type    | Description                                              |
+|----------------|---------|----------------------------------------------------------|
+| `route_key`    | `str`   | The route key that triggered the limit.                  |
+| `retry_after`  | `float` | Seconds the caller should wait before retrying.          |
+
+Example — returning a proper HTTP 429 response in a Flask handler:
+
+```python
+except RateLimitError as exc:
+    return Response(
+        status=429,
+        headers={"Retry-After": str(int(exc.retry_after))},
+    )
+```
+
 ## Configuration example
 
 In your `hookpipe` YAML config you can annotate each route with rate-limit
